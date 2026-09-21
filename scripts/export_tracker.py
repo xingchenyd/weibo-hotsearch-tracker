@@ -6,9 +6,9 @@
 
 输出（与甲方模板逐列一致）：
   事件数据集/
-    事件.xlsx            24 列
-    事件评论信息.xlsx     4 列
-    事件图/P{n}/         事件配图，每个事件一个目录，内含 n-1.jpg, n-2.jpg …
+    事件.xlsx            24 列（列宽统一、行高自适应内容、自动换行）
+    事件评论信息.xlsx     4 列（同上）
+    事件图/{n}-{k}.jpg   事件配图，扁平存放：第 n 条事件的第 k 张
 
 字段映射：
   序号            <- 行号
@@ -28,8 +28,9 @@
 
 关于图片（老师要求：每个事件 5 张，不足 5 张至少 1 张）：
   微博帖子本身就带图，接口能直接拿到原图 URL，所以**不必手工截图**，
-  直接下载原图比截图更清晰。命名按老师给的约定：
-    P{n} 是第 n 条事件的图片集合，里面的文件叫 n-1、n-2 …（这里存 n-1.jpg）
+  直接下载原图比截图更清晰。命名采用数字、扁平存放：
+    事件图/{n}-{k}.jpg   第 n 条事件的第 k 张图（不再每个事件建一个子目录）
+  表格「图片」列写 P{n}，即"该事件的图就是 {n}-* 那组"。
   · 默认不下载（导出快）；加 --fetch-pics 才下载
   · 帖子有 0 张图时（纯文字帖或视频帖），默认留空；
     加 --supplement-search 会去该话题搜索页第 1 页兜底收集图片，
@@ -158,7 +159,7 @@ def download_pics(targets, max_pics=5, supplement=False, verbose=True):
                …]。has_post 用来区分两种情况：**还没抓正文**（后续轮次会补）
     和**帖子本身没配图**（本来就没有）—— 混为一谈会误导判断。
 
-    命名：事件图/P{n}/{n}-{k}.jpg —— 对应老师说的"P1 里面有 5 张，就是 1-1…1-5"。
+    命名：事件图/{n}-{k}.jpg —— 扁平存放，不再为每个事件建子目录。
     图片走的是新浪 CDN（http://wx*.sinaimg.cn），不是微博接口，
     所以间隔按 1.5s 起即可，不必像接口那样压到 10s 以上。
     """
@@ -187,8 +188,7 @@ def download_pics(targets, max_pics=5, supplement=False, verbose=True):
                 if verbose:
                     print(f'    P{i} 帖子本身未配图  {(word or "")[:20]}')
             continue
-        sub = os.path.join(IMGDIR, f'P{i}')
-        os.makedirs(sub, exist_ok=True)
+        sub = IMGDIR
         got = 0
         for k, u in enumerate(urls, 1):
             n = _download_one(u, os.path.join(sub, f'{i}-{k}.jpg'))
@@ -204,12 +204,72 @@ def download_pics(targets, max_pics=5, supplement=False, verbose=True):
                 print(f'    P{i} {got} 张  [{src}]  {(word or "")[:20]} {flag}')
         else:
             n_fail += 1
-            shutil.rmtree(sub, ignore_errors=True)
             if verbose:
                 print(f'    P{i} 下载失败  {(word or "")[:20]}')
     print(f'  图片：成功 {n_ok} 个事件，共 {n_bytes / 1048576:.1f} MB；'
           f'帖子本身无图 {n_empty} 个；尚未抓正文 {n_nopost} 个；失败 {n_fail} 个')
     return ref
+
+
+def _disp_len(s):
+    """显示宽度：中日韩/全角字符算 2，其余算 1（Excel 列宽以半角字符计）。"""
+    n = 0
+    for ch in str(s):
+        n += 2 if ord(ch) > 0x2E80 else 1
+    return n
+
+
+def _wrapped_lines(text, col_width):
+    """文本在给定列宽下换行后占的行数。"""
+    if text is None or text == '':
+        return 1
+    total = 0
+    for para in str(text).split('\n'):
+        total += max(1, -(-_disp_len(para) // max(1, int(col_width))))
+    return total
+
+
+def style_sheet(ws, widths, line_pt=14.5, min_h=18.0, max_h=409.0):
+    """统一列宽 + 行高按内容自适应 + 自动换行，保证格子能显示完整内容。
+
+    · 每列固定一个宽度（同一列所有格子左右宽度一致）
+    · 每行高度按该行内容自动撑开（不裁切文字）
+    · 全部单元格开启自动换行、顶端对齐；表头冻结并加底色
+    """
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    ncol, nrow = len(widths), ws.max_row
+    # 1) 列宽（每列统一）
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    # 2) 表头
+    head_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    for c in range(1, ncol + 1):
+        cell = ws.cell(1, c)
+        cell.font = Font(bold=True, size=11)
+        cell.fill = PatternFill('solid', fgColor='D9E1F2')
+        cell.alignment = head_align
+    ws.row_dimensions[1].height = 26
+    # 3) 数据行：行高按内容自适应
+    body_align = Alignment(vertical='top', wrap_text=True)
+    for r in range(2, nrow + 1):
+        need = 1
+        for c in range(1, ncol + 1):
+            need = max(need, _wrapped_lines(ws.cell(r, c).value, widths[c - 1]))
+        ws.row_dimensions[r].height = min(max_h, max(min_h, need * line_pt))
+        for c in range(1, ncol + 1):
+            ws.cell(r, c).alignment = body_align
+    # 4) 冻结表头，滚动时列名常驻
+    ws.freeze_panes = 'A2'
+
+
+# 各列宽度（半角字符为单位；中文按 2 计）
+# 「事件内容」列最宽：实测最长正文显示宽度 2424，列宽需 ≥87 才能让所有内容
+# 在 Excel 单行 409pt 上限内完整显示（宽 90 时最长行 392pt，安全）。
+EVENT_WIDTHS = ([6, 24, 90, 16, 20, 20, 20, 20, 10, 10, 10, 12]
+                + [10] * len(OFFSET_COLS))
+COMMENT_WIDTHS = [8, 20, 90, 10]
 
 
 def main():
@@ -221,7 +281,7 @@ def main():
                     help='连"还没抓到正文"的话题也一起导出（默认只导出有正文的，'
                          '避免表里出现成片空白）')
     ap.add_argument('--fetch-pics', action='store_true',
-                    help='下载事件配图到 事件图/P{n}/（不指定则只出表）')
+                    help='下载事件配图到 事件图/{n}-{k}.jpg（不指定则只出表）')
     ap.add_argument('--max-pics', type=int, default=5,
                     help='每个事件最多存几张图（默认 5，与老师要求一致）')
     ap.add_argument('--supplement-search', action='store_true',
@@ -312,6 +372,7 @@ def main():
     ws.append(EVENT_COLS)
     for r in event_rows:
         ws.append(r)
+    style_sheet(ws, EVENT_WIDTHS)          # 列宽统一 + 行高自适应 + 自动换行
     p1 = os.path.join(OUTDIR, '事件.xlsx')
     wb.save(p1)
 
@@ -321,6 +382,7 @@ def main():
     ws2.append(COMMENT_COLS)
     for r in comment_rows:
         ws2.append(r)
+    style_sheet(ws2, COMMENT_WIDTHS)       # 同上
     p2 = os.path.join(OUTDIR, '事件评论信息.xlsx')
     wb2.save(p2)
 
