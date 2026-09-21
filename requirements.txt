@@ -1,0 +1,12 @@
+# 微博热搜生命周期追踪爬虫 —— 依赖清单
+# 安装：pip install -r requirements.txt
+
+# ---- 核心依赖 ----
+curl_cffi>=0.7          # 【必需】伪装 Chrome 的 TLS 指纹，微博反爬绕过的前提
+openpyxl>=3.1           # 【必需】导出 事件.xlsx / 事件评论信息.xlsx
+websocket-client>=1.6   # 【必需】有头浏览器登录时通过 CDP 读取 Cookie
+cryptography>=41        # 可选：解密浏览器 profile 里的 Cookie
+
+# ---- 可选依赖 ----
+matplotlib>=3.7         # 可选：scripts/gen_report.py 生成统计图表
+Pillow>=10              # 可选：图片处理

@@ -1,0 +1,24 @@
+# 代理列表（一行一个，# 开头为注释行）
+# ============================================================
+# 用途：container 系列接口对同一 IP 会持续返回 HTTP 432，
+#       配好代理后 event_crawler.py 遇 432 会自动轮换下一个 IP。
+#
+# 用法：
+#   python scripts/event_crawler.py --mode hot-events --proxy-file config/proxies.txt
+#   或单个：--proxy http://user:pass@host:port
+#
+# 格式（支持 http / https / socks5）：
+#   http://用户名:密码@主机:端口
+#   socks5://用户名:密码@主机:端口
+#   如果代理无需认证，写成 http://主机:端口
+#
+# 注意：
+#   - 住宅代理优先。微博对机房 IP 往往直接 432。
+#   - 本文件可能含账号密码，不要提交到 git。
+#   - 换 IP 不一定能解除 432：432 既可能来自 IP 被标记，
+#     也可能来自匿名访问策略。若换多个 IP 仍 432，
+#     就说明必须配 Cookie（搜索接口是登录墙，不是 IP 墙）。
+
+# 下面是占位示例，请替换成你自己的：
+# http://user1:pass1@gate.example.com:8080
+# http://user2:pass2@gate.example.com:8080

@@ -1,0 +1,26 @@
+# 微博 Cookie 配置说明
+# ============================================================
+# 用途：解锁「关键词搜索」「用户时间线」两种事件发现模式，
+#       并（预期）解锁评论的全量翻页。
+#
+# 用法（二选一）：
+#   1) 环境变量（推荐，不会写进文件、不会被 git 跟踪）
+#        PowerShell:  $env:WEIBO_COOKIE="SUB=xxx; SUBP=yyy; SSOLoginState=zzz"
+#        cmd:         set WEIBO_COOKIE=SUB=xxx; SUBP=yyy
+#        Git Bash:    export WEIBO_COOKIE="SUB=xxx; SUBP=yyy"
+#   2) 把下面这行解除注释、填好后另存为 cookie.txt，再传 --cookie-file cookie.txt
+#      （cookie.txt 不要提交到 git）
+#
+# 怎么取：
+#   1. 浏览器（Chrome/Edge）登录 weibo.com 或 m.weibo.cn
+#   2. F12 打开开发者工具 -> Network（网络）
+#   3. 刷新页面，点任意一个请求 -> Headers -> Request Headers
+#   4. 复制 Cookie: 后面那一整行
+#
+# 注意：
+#   - 只要 SUB 和 SUBP 两个值通常就够用，但整行复制最稳妥。
+#   - Cookie 有有效期，过期后会重新出现 {"ok":-100} 或 HTTP 432，需重新获取。
+#   - 建议用不常用的小号，避免影响主账号。
+#
+# 本文件仅为模板，把真实 Cookie 写在这里并不安全，优先用环境变量。
+WEIBO_COOKIE=SUB=在这里粘贴你的SUB值; SUBP=在这里粘贴你的SUBP值; SSOLoginState=在这里粘贴
