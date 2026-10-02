@@ -16,9 +16,16 @@
   事件内容        <- 该话题下最热微博的正文
   来源            <- 微博账号昵称
   事件发生时间    <- 微博发布时间（= 事件最开始发生的时间）
-  上头条热榜时间  <- onboard_time（热搜接口给的精确上榜时间）
-  下头条热榜时间  <- 连续观测中最后一次出现在榜上的时刻
-  事件结束时间    <- 与下头条热榜时间相同（已与需求方确认：事件结束 = 下热搜）
+  上头条热榜时间  <- 热搜接口的 onboard_time。**注意该字段的真实性质**：
+                     它不是逐话题的真实秒级时刻，而是微博榜单的**批次刷新时刻**——
+                     同一批上榜的话题共享同一值；且其"秒"部分呈**单调递增**
+                     （实测 109 条里秒数从 13 一路递增到 24，真实时钟不可能这样）。
+                     故精度约 ±1 分钟，同批次话题时间相同属数据源特性，非抓取错误。
+  下头条热榜时间  <- 首次确认"已不在榜"的采样时刻，即下榜时刻的**上界**
+                     （真实下榜落入 (最后一次在榜, 本值] 内，误差 <= 采样间隔）
+  事件结束时间    <- 留空（微博数据不含此字段）。旧版直接复制下榜时间，
+                     导致 69 行两列完全相同，已按反馈修正；
+                     需要旧行为时加 --event-end offboard
   评论信息        <- R{序号}
   图片            <- P{序号}（需加 --fetch-pics 才会真正下载文件）
   类型            <- 微博官方分类
@@ -47,6 +54,7 @@
 import argparse
 import csv
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -152,8 +160,14 @@ def _download_one(url, dest):
     return 0
 
 
-def download_pics(targets, max_pics=5, supplement=False, verbose=True):
+def download_pics(targets, max_pics=5, supplement=False, verbose=True,
+                  reuse_dir=None, download=True):
     """下载事件配图。
+
+    踩过的坑（2026-09-22）：重导表格时若不带 --fetch-pics，"图片"列会**全空**——
+    因为 pic_ref 只在下载流程里构建。而重下 125 张图要 15 分钟，纯属浪费。
+    故加 reuse_dir：先把上一轮已下载的图挪到临时区，这里按 `{n}-*.jpg` 前缀
+    直接匹配复用，秒级完成；只有缺失的才真正下载（download=False 则完全不下载）。
 
     targets = [(序号, event_id, word, pics_str, has_post),
                …]。has_post 用来区分两种情况：**还没抓正文**（后续轮次会补）
@@ -167,8 +181,40 @@ def download_pics(targets, max_pics=5, supplement=False, verbose=True):
     if os.path.exists(COOKIE_FILE):
         cookie = open(COOKIE_FILE, encoding='utf-8').read().strip()
 
+    # 扫描上一轮已下载的图片，按事件序号归组
+    cached = {}
+    if reuse_dir and os.path.isdir(reuse_dir):
+        for f in os.listdir(reuse_dir):
+            m = re.match(r'^(\d+)-(\d+)\.jpg$', f)
+            if m:
+                cached.setdefault(int(m.group(1)), []).append(f)
+        if verbose and cached:
+            print(f'  复用上一轮配图：{len(cached)} 个事件有缓存')
+
     ref, n_ok, n_empty, n_nopost, n_fail, n_bytes = {}, 0, 0, 0, 0, 0
+    n_reused = 0
     for idx, (i, eid, word, pics, has_post) in enumerate(targets, 1):
+        # ① 优先复用缓存
+        if i in cached:
+            for f in sorted(cached[i]):
+                try:
+                    shutil.copy2(os.path.join(reuse_dir, f),
+                                 os.path.join(IMGDIR, f))
+                    n_bytes += os.path.getsize(os.path.join(IMGDIR, f))
+                except Exception:                               # noqa: BLE001
+                    pass
+            ref[eid] = f'P{i}'
+            n_ok += 1
+            n_reused += 1
+            continue
+        # ② 没有缓存：只在允许下载时才走网络
+        if not download:
+            if not has_post:
+                n_nopost += 1
+            else:
+                n_empty += 1
+            continue
+
         urls = [u for u in (pics or '').split('|') if u][:max_pics]
         src = '帖子自带'
         if not urls and supplement and cookie:
@@ -206,7 +252,8 @@ def download_pics(targets, max_pics=5, supplement=False, verbose=True):
             n_fail += 1
             if verbose:
                 print(f'    P{i} 下载失败  {(word or "")[:20]}')
-    print(f'  图片：成功 {n_ok} 个事件，共 {n_bytes / 1048576:.1f} MB；'
+    print(f'  图片：成功 {n_ok} 个事件（其中复用缓存 {n_reused} 个），'
+          f'共 {n_bytes / 1048576:.1f} MB；'
           f'帖子本身无图 {n_empty} 个；尚未抓正文 {n_nopost} 个；失败 {n_fail} 个')
     return ref
 
@@ -282,11 +329,17 @@ def main():
                          '避免表里出现成片空白）')
     ap.add_argument('--fetch-pics', action='store_true',
                     help='下载事件配图到 事件图/{n}-{k}.jpg（不指定则只出表）')
+    ap.add_argument('--reuse-pics', action='store_true',
+                    help='复用上一轮已下载的配图来填「图片」列（不重新下载）。'
+                         '重导表格时务必带上，否则「图片」列会全空')
     ap.add_argument('--max-pics', type=int, default=5,
                     help='每个事件最多存几张图（默认 5，与老师要求一致）')
     ap.add_argument('--supplement-search', action='store_true',
                     help='帖子自己没配图时，去该话题搜索页兜底找图。'
                          '每个缺图事件多 1 次需要登录的搜索请求，默认关闭')
+    ap.add_argument('--event-end', choices=['blank', 'offboard'], default='blank',
+                    help='「事件结束时间」列怎么填：blank=留空（默认，微博无此数据）；'
+                         'offboard=与下头条热榜时间相同（旧行为，会造成两列完全重复）')
     args = ap.parse_args()
 
     if not os.path.exists(DB):
@@ -294,13 +347,35 @@ def main():
         return 1
     import openpyxl
 
+    # 要用上一轮已下载的图时，必须先把 事件图 挪出 dataset_tracker，
+    # 否则会被下面的 rmtree 一并删掉（重下 125 张图需要约 15 分钟）。
+    #
+    # ⚠️ 2026-09-22 踩坑：最初写成「old_pic 存在就 rmtree(stash) 再 move」，
+    # 但崩溃重跑时会留下一个**空的事件图目录**，于是 rmtree(stash) 把上一轮
+    # 暂存的好图全删了。现在改为：**stash 里已有图就绝不删**，只有「stash 为空
+    # 且 old_pic 确实有图」时才搬运。宁可不复用，也不能删掉已有素材。
+    stash = os.path.join(ROOT, '_pic_stash')
+    if args.reuse_pics:
+        old_pic = os.path.join(ROOT, 'dataset_tracker', '事件数据集', '事件图')
+        old_n = len(os.listdir(old_pic)) if os.path.isdir(old_pic) else 0
+        stash_n = len(os.listdir(stash)) if os.path.isdir(stash) else 0
+        if stash_n:
+            print(f'  复用已有暂存配图：{stash_n} 个文件（不重新搬运/删除）')
+        elif old_n:
+            try:
+                shutil.move(old_pic, stash)
+                print(f'  已暂存上一轮配图：{old_n} 个文件')
+            except Exception as exc:                            # noqa: BLE001
+                print(f'  暂存配图失败：{exc}')
+
     shutil.rmtree(os.path.join(ROOT, 'dataset_tracker'), ignore_errors=True)
     os.makedirs(IMGDIR, exist_ok=True)
 
     c = sqlite3.connect(DB)
     rows = c.execute("""
         SELECT e.event_id, e.word, e.category, e.onboard_ts, e.offboard_ts,
-               p.created_at, p.text, p.screen_name, p.mid, p.pics
+               p.created_at, p.text, p.screen_name, p.mid, p.pics,
+               e.offboard_upper_ts
         FROM tracked_events e
         LEFT JOIN event_posts p ON p.event_id = e.event_id
         ORDER BY e.onboard_ts DESC
@@ -331,17 +406,20 @@ def main():
                   f'用 --all-events 可一并导出）')
 
     # 先决定序号 -> 下载图片（序号必须与表里的"序号"列一致，所以要在构表前做）
-    if args.fetch_pics:
+    if args.fetch_pics or args.reuse_pics:
         targets = [(i, r[0], r[1], r[9], bool(r[8] or r[6]))
                    for i, r in enumerate(rows, 1)]
         pic_ref = download_pics(targets, max_pics=args.max_pics,
-                                supplement=args.supplement_search)
+                                supplement=args.supplement_search,
+                                reuse_dir=(stash if args.reuse_pics else None),
+                                download=args.fetch_pics)
     else:
         pic_ref = {}
 
     event_rows, comment_rows = [], []
     n_with_heat = 0
-    for i, (eid, word, cat, onb, off, created, text, sn, mid, _pics) in enumerate(rows, 1):
+    for i, (eid, word, cat, onb, off, created, text, sn, mid,
+            _pics, off_up) in enumerate(rows, 1):
         series = dict(c.execute(
             "SELECT offset_hours, heat FROM heat_series "
             "WHERE event_id=? AND status='recorded'", (eid,)).fetchall())
@@ -349,9 +427,20 @@ def main():
             n_with_heat += 1
         heat_cells = [series.get(o) if series.get(o) is not None else ''
                       for o in OFFSETS]
+        # ── 下头条热榜时间 ──────────────────────────────────────────────
+        # 取「首次确认不在榜」的上界（offboard_upper_ts），而不是「最后一次
+        # 在榜」的下界。原因：抽样间隔 >= 30 分钟，只被采到一轮的短命话题
+        # 若取下界，会显示成「上榜 18 秒就下榜」——那是观测假象，不是事实。
+        # 真实下榜时刻落在 (下界, 上界] 内；取上界可保证不出现自相矛盾的值。
+        off_best = off_up or off
+        # ── 事件结束时间 ────────────────────────────────────────────────
+        # 默认**留空**：微博数据里没有「事件结束」这个字段，过去直接复制
+        # 下榜时间，导致 69 行两列完全相同，属误导。需要旧行为时加
+        # --event-end offboard。
+        end_cell = off_best if args.event_end == 'offboard' else ''
         event_rows.append([
             i, word or '', text or '', sn or '', parse_weibo_time(created),
-            onb or '', off or '', off or '',
+            onb or '', off_best or '', end_cell,
             f'R{i}', pic_ref.get(eid, ''), cat or '', '',
         ] + heat_cells)
 
@@ -404,6 +493,9 @@ def main():
         shutil.make_archive(zp[:-4], 'zip',
                             os.path.join(ROOT, 'dataset_tracker'), '事件数据集')
         print(f'✓ {zp}  ({os.path.getsize(zp):,} bytes)')
+    # 清理暂存的上一轮配图
+    if os.path.isdir(stash):
+        shutil.rmtree(stash, ignore_errors=True)
     return 0
 
 

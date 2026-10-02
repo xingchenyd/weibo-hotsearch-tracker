@@ -2,8 +2,8 @@
 """
 微博热搜生命周期追踪 —— 汇报分析生成器
 生成：1 份 markdown 报告 + 5 张图表 PNG（输出到 reports/）
-用 anaconda python 跑（需 matplotlib）：
-    D:/anaconda/python.exe scripts/gen_report.py
+用装了 matplotlib 的解释器跑：
+    python scripts/gen_report.py
 """
 import os
 import sqlite3

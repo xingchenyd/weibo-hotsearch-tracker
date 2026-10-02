@@ -1,12 +1,21 @@
-# 微博热搜生命周期追踪爬虫 —— 依赖清单
+# 微博热搜追踪爬虫 —— 依赖清单
 # 安装：pip install -r requirements.txt
 
-# ---- 核心依赖 ----
-curl_cffi>=0.7          # 【必需】伪装 Chrome 的 TLS 指纹，微博反爬绕过的前提
-openpyxl>=3.1           # 【必需】导出 事件.xlsx / 事件评论信息.xlsx
-websocket-client>=1.6   # 【必需】有头浏览器登录时通过 CDP 读取 Cookie
-cryptography>=41        # 可选：解密浏览器 profile 里的 Cookie
+# ---- 采集必需 ----
+curl_cffi>=0.7          # 【必需】伪装 Chrome 的 TLS 指纹，能请求通微博接口的前提
+openpyxl>=3.1           # 【必需】导出 事件表.xlsx / 热度明细.xlsx / 事件评论信息.xlsx
 
-# ---- 可选依赖 ----
-matplotlib>=3.7         # 可选：scripts/gen_report.py 生成统计图表
+# ---- 分析与可视化（导出脚本需要）----
+matplotlib>=3.7         # 【必需】export_boards.py / gen_boards_report.py 生成图表
 Pillow>=10              # 可选：图片处理
+
+# ---- 报告转 Word（可选）----
+# 注意：包名是 html-for-docx，导入名才是 html4docx；
+#       误装同名的 html4docx 包会报 cannot import name 'HtmlToDocx'。
+html-for-docx>=1.1,<2   # 可选：gen_report_html.py 产出的 HTML → .docx
+httpx>=0.27,<1          # html-for-docx 依赖
+click>=8.1,<9           # html-for-docx 依赖
+
+# ---- 浏览器登录（可选，用于自动导出 Cookie）----
+websocket-client>=1.6   # 有头浏览器登录时通过 CDP 读取 Cookie
+cryptography>=41        # 从浏览器 profile 解密 Cookie

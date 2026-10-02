@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -36,8 +37,13 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NODE_PREFIX = r'C:\Users\lenovo\.workbuddy\binaries\node\versions\22.22.2-3'
-AB = os.path.join(NODE_PREFIX, 'agent-browser.cmd')
+# agent-browser 与它的 Node 目录：优先环境变量，其次从 PATH 自动查找。
+# （不要写死本机绝对路径 —— 换机器即失效，且会泄露用户名。）
+NODE_PREFIX = os.environ.get('AGENT_BROWSER_NODE') or ''
+AB = (os.environ.get('AGENT_BROWSER')
+      or shutil.which('agent-browser')
+      or shutil.which('agent-browser.cmd')
+      or (os.path.join(NODE_PREFIX, 'agent-browser.cmd') if NODE_PREFIX else ''))
 SESSION = 'weibo'
 COOKIE_OUT = os.path.join(ROOT, 'config', 'cookie.txt')
 PROFILE = os.path.join(ROOT, '.browser-profile2')      # 全新 profile
@@ -71,7 +77,8 @@ SAFE_CRAWL_ARGS = [
 
 def env_with_node():
     env = dict(os.environ)
-    env['PATH'] = NODE_PREFIX + os.pathsep + env.get('PATH', '')
+    if NODE_PREFIX:
+        env['PATH'] = NODE_PREFIX + os.pathsep + env.get('PATH', '')
     env['AGENT_BROWSER_HEADED'] = 'true'
     return env
 
@@ -86,7 +93,7 @@ def ab(*args, timeout=120):
 def kill_stale():
     subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe'],
                    capture_output=True, timeout=60)
-    d = r'C:\Users\lenovo\.agent-browser'
+    d = os.path.join(os.path.expanduser('~'), '.agent-browser')
     for n in ('default.pid', 'default.port', 'default.engine',
               'default.version', 'default.stream'):
         p = os.path.join(d, n)

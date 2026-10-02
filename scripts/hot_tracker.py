@@ -40,12 +40,17 @@
                 写别的时刻的热度会误导，所以宁可留空，不伪造
   偏离分钟数（带符号，负=样本早于目标）都记在 lag_minutes 里，精度可核查。
 
-  时间精度（小时制采样）：
-    上热搜时间 —— 取自接口的 onboard_time，精确到秒（同一批上榜的词
-                  共享同一时刻，因为榜单按分钟刷新），精度约 ±1 分钟。
-                  **这一项不受采样频率影响，始终是最准的。**
-    下热搜时间 —— 只能由"最后一次观测到在榜"推断，
-                  精度 = 采样间隔（小时制约 ±1 小时）；
+  时间精度（小时制采样）——**2026-09-22 依据实测修正**：
+    上热搜时间 —— 取自接口的 onboard_time。实测证明它**不是真实秒级时刻**：
+                  109 条数据的"秒"部分随时间**单调递增**（13→14→…→24），
+                  真实时钟不可能如此；同一批上榜的话题还共享同一值。
+                  故它是**榜单批次刷新时刻**，精度约 ±1 分钟。
+                  这是数据源限制，无法改善；但**提高采样频率能缩小"首次发现"
+                  与"真实上榜"之间的滞后**（30 分钟采样 ≈ 滞后 ≤30 分钟）。
+    下热搜时间 —— 给出区间：下界 offboard_ts = 最后一次观测在榜；
+                  上界 offboard_upper_ts = 首次观测到"已不在榜"。
+                  真实下榜落入 (下界, 上界]，跨度 = 采样间隔。
+                  只取单一值时用上界，避免短命话题出现"上榜≈下榜"的假象。
                   另加连续 2 次缺失才判下榜的防抖，避免榜单抖动误判
     热度时点   —— 精度约 ±30 分钟（= 采样间隔的一半）
 
@@ -92,8 +97,12 @@ CREATE TABLE IF NOT EXISTS tracked_events (
     word          TEXT,               -- 事件名（热搜词）
     word_scheme   TEXT,               -- #事件名#
     category      TEXT,               -- 类型（官方分类）
-    onboard_ts    TEXT,               -- 上热搜时间
-    offboard_ts   TEXT,               -- 下热搜时间（最后一次在榜时刻）
+    onboard_ts    TEXT,               -- 上热搜时间（微博接口 onboard_time）
+    offboard_ts   TEXT,               -- 下热搜时间**下界** = 最后一次确认在榜的时刻
+    offboard_upper_ts TEXT,           -- 下热搜时间**上界** = 首次确认“已不在榜”的采样时刻
+                                      --   → 真实下榜时刻 ∈ (offboard_ts, offboard_upper_ts]
+                                      --   → 只有下界时，短命话题会出现“上榜≈下榜”的假象，
+                                      --     故两者都留，供导出/分析按需取用
     first_seen_ts TEXT,               -- 我们首次观测到的时刻
     last_seen_ts  TEXT,               -- 最后一次在榜的时刻
     rank_first    INTEGER,
@@ -233,7 +242,8 @@ def migrate(c):
     def cols(t):
         return {r[1] for r in c.execute(f'PRAGMA table_info({t})')}
     want = {
-        'tracked_events': [('miss_count', 'INTEGER DEFAULT 0')],
+        'tracked_events': [('miss_count', 'INTEGER DEFAULT 0'),
+                           ('offboard_upper_ts', 'TEXT')],
         'event_comments': [('is_reply', 'INTEGER DEFAULT 0'),
                            ('parent_comment_id', 'TEXT'),
                            ('floor_number', 'INTEGER')],
@@ -339,6 +349,7 @@ def tick(top=60, with_detail=True, verbose=True, comment_pages=3,
             came_back = bool(prev) and not prev[0]
             c.execute("""UPDATE tracked_events SET last_seen_ts=?, rank_last=?,
                          latest_heat=?, is_active=1, offboard_ts=NULL,
+                         offboard_upper_ts=NULL,
                          peak_heat=MAX(COALESCE(peak_heat,0), COALESCE(?,0))
                          WHERE event_id=?""",
                       (now_s, it['rank'], it['heat'], it['heat'], eid))
@@ -384,6 +395,14 @@ def tick(top=60, with_detail=True, verbose=True, comment_pages=3,
                           'WHERE event_id=?', (eid,))
             continue
         miss += 1
+        if miss == 1:
+            # 首次确认「已不在榜」：这一刻是下榜时刻的**上界**。
+            # 真实下榜时刻落在 (last_seen_ts, now_s] 区间内；
+            # 只记 last_seen_ts 会让「只被采样到一轮」的话题显示成
+            # 「上榜 18 秒就下榜」——那是观测不足的假象，不是事实。
+            c.execute('UPDATE tracked_events SET offboard_upper_ts=?, '
+                      'miss_count=? WHERE event_id=?', (now_s, miss, eid))
+            continue
         if miss < offboard_misses:
             c.execute('UPDATE tracked_events SET miss_count=? WHERE event_id=?',
                       (miss, eid))
